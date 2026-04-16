@@ -59,15 +59,21 @@ if [ -z "$EXISTING_UUID" ] || [ "$EXISTING_UUID" = "null" ]; then
       ]
     ' "$CONF" > "${CONF}.tmp" && mv "${CONF}.tmp" "$CONF"
 else
-    # === ADD: только добавляем SID (клиенты не трогаем — один UUID на всех) ===
+    # === ADD: только добавляем SID (клиенты не трогаем) ===
     log "[➕ ADD] Используем существующий UUID. Добавляем SID: ${NEW_SID}"
     NEW_UUID="$EXISTING_UUID"
+    
+    # 🔑 Читаем PUBLIC_KEY из файла, если он есть
+    PUBLIC_KEY=""
+    if [ -f "$PUBKEY_FILE" ] && [ -s "$PUBKEY_FILE" ]; then
+        PUBLIC_KEY=$(cat "$PUBKEY_FILE")
+    fi
     
     # Собираем текущие SID + новый, убираем пустые и дубликаты
     CURRENT=$(jq -r '.inbounds[] | select(.protocol=="vless" and .port==443) | .streamSettings.realitySettings.shortIds[]? // empty' "$CONF" 2>/dev/null | grep -v '^$' || true)
     NEW_LIST=$(printf '%s\n%s' "$CURRENT" "$NEW_SID" | grep -v '^$' | sort -u | jq -R . | jq -s .)
     
-    # Обновляем ТОЛЬКО shortIds — clients не меняем!
+    # Обновляем ТОЛЬКО shortIds
     jq --argjson sids "$NEW_LIST" '
       (.inbounds[] | select(.protocol=="vless" and .port==443) | .streamSettings.realitySettings.shortIds) = $sids
     ' "$CONF" > "${CONF}.tmp" && mv "${CONF}.tmp" "$CONF"
