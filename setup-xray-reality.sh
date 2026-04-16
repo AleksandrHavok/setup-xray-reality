@@ -49,7 +49,6 @@ if [ -z "$EXISTING_UUID" ] || [ "$EXISTING_UUID" = "null" ]; then
     
     echo "$PUBLIC_KEY" > "$PUBKEY_FILE" && chmod 600 "$PUBKEY_FILE"
     
-    # Обновляем конфиг: ключи + первый клиент + первый SID
     jq --arg pkey "$PRIVATE_KEY" --arg uuid "$NEW_UUID" --arg sid "$NEW_SID" '
       .inbounds = [.inbounds[] | 
         if .protocol=="vless" and .port==443 then 
@@ -60,20 +59,22 @@ if [ -z "$EXISTING_UUID" ] || [ "$EXISTING_UUID" = "null" ]; then
       ]
     ' "$CONF" > "${CONF}.tmp" && mv "${CONF}.tmp" "$CONF"
 else
-    # === ADD: последовательно добавляем SID и клиента ===
+    # === ADD: последовательно добавляем SID и клиента через пайп ===
     log "[➕ ADD] Используем существующий UUID. Добавляем SID: ${NEW_SID}"
     NEW_UUID="$EXISTING_UUID"
     
-    # 1. Добавляем SID в массив shortIds (если ещё нет)
-    jq --arg sid "$NEW_SID" '
-      (.inbounds[] | select(.protocol=="vless" and .port==443) | .streamSettings.realitySettings.shortIds) |= 
-        ((. // []) | if index($sid) then . else . + [$sid] end)
-    ' "$CONF" > "${CONF}.tmp" && mv "${CONF}.tmp" "$CONF"
-    
-    # 2. Добавляем нового клиента в массив clients
-    jq --arg uuid "$NEW_UUID" '
-      (.inbounds[] | select(.protocol=="vless" and .port==443) | .settings.clients) += 
-        [{"id": $uuid, "flow": "xtls-rprx-vision", "email": "shared"}]
+    # Один jq-запрос: сначала добавляем SID, потом клиента (через |)
+    jq --arg sid "$NEW_SID" --arg uuid "$NEW_UUID" '
+      .inbounds = [.inbounds[] |
+        if .protocol=="vless" and .port==443 then
+          # 1. Добавляем SID (если нет)
+          (.streamSettings.realitySettings.shortIds // []) as $sids |
+          (if ($sids | index($sid)) then $sids else $sids + [$sid] end) as $new_sids |
+          .streamSettings.realitySettings.shortIds = $new_sids |
+          # 2. Добавляем клиента
+          .settings.clients += [{"id": $uuid, "flow": "xtls-rprx-vision", "email": "shared"}]
+        else . end
+      ]
     ' "$CONF" > "${CONF}.tmp" && mv "${CONF}.tmp" "$CONF"
 fi
 
