@@ -12,6 +12,7 @@ log() { echo "$@" | tee -a "$LOG"; }
 log "=== $(date '+%Y-%m-%d %H:%M:%S') Xray Reality Setup ==="
 command -v timedatectl &>/dev/null && timedatectl set-ntp true 2>/dev/null || true
 
+# ── УСТАНОВКА ЗАВИСИМОСТЕЙ ──
 if ! command -v jq &> /dev/null; then
     log "[INFO] Устанавливаем jq..."
     (command -v apt &>/dev/null && sudo apt update -qq && sudo apt install -y jq >/dev/null 2>&1) || \
@@ -24,16 +25,50 @@ if ! command -v xray &> /dev/null; then
     bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
 fi
 
-[ ! -f "$CONF" ] && { log "[ERROR] Конфиг не найден: $CONF"; exit 1; }
+# ── ПРОВЕРКА ИЛИ СОЗДАНИЕ КОНФИГА ──
+mkdir -p "$(dirname "$CONF")"
+
+if [ ! -f "$CONF" ]; then
+    log "[INFO] Конфиг не найден. Создаём минимальный валидный шаблон..."
+    OUTPUT=$(/usr/local/bin/xray x25519 2>&1)
+    TEMP_KEY=$(echo "$OUTPUT" | grep "PrivateKey:" | awk '{print $2}' || true)
+    TEMP_SID=$(openssl rand -hex 4 2>/dev/null || head -c 4 /dev/urandom | xxd -p)
+
+    if [ -z "$TEMP_KEY" ]; then
+        log "[ERROR] Не удалось сгенерировать временный ключ для шаблона."
+        exit 1
+    fi
+
+    jq -n --arg pkey "$TEMP_KEY" --arg sid "$TEMP_SID" '{
+      "log": {"loglevel": "info"},
+      "inbounds": [{
+        "port": 443, "protocol": "vless",
+        "settings": {"clients": [], "decryption": "none"},
+        "streamSettings": {
+          "network": "tcp", "security": "reality",
+          "realitySettings": {
+            "show": false, "dest": "www.samsung.com:443", "xver": 0,
+            "serverNames": ["www.samsung.com"],
+            "privateKey": $pkey,
+            "minClientVer": "", "maxClientVer": "", "maxTimeDiff": 0,
+            "shortIds": [$sid]
+          }
+        },
+        "sniffing": {"enabled": true, "destOverride": ["http", "tls"]}
+      }],
+      "outbounds": [{"protocol": "freedom", "tag": "direct"}]
+    }' > "$CONF"
+    log "[OK] Шаблон создан."
+fi
+
 BACKUP="${CONF}.bak.$(date '+%Y%m%d%H%M%S')"
 cp "$CONF" "$BACKUP"
 
 NEW_SID=$(openssl rand -hex 4 2>/dev/null || head -c 4 /dev/urandom | xxd -p)
 EXISTING_UUID=$(jq -r '.inbounds[] | select(.protocol=="vless" and .port==443) | .settings.clients[0].id // empty' "$CONF" 2>/dev/null || echo "")
 
-# ── [5] ОСНОВНАЯ ЛОГИКА ──
+# ── ОСНОВНАЯ ЛОГИКА ──
 if [ -z "$EXISTING_UUID" ] || [ "$EXISTING_UUID" = "null" ]; then
-    # === FIRST RUN: генерируем всё с нуля ===
     log "[🔑 FIRST RUN] Генерируем ключи и базовый UUID..."
     NEW_UUID=$(/usr/local/bin/xray uuid)
     
@@ -59,27 +94,23 @@ if [ -z "$EXISTING_UUID" ] || [ "$EXISTING_UUID" = "null" ]; then
       ]
     ' "$CONF" > "${CONF}.tmp" && mv "${CONF}.tmp" "$CONF"
 else
-    # === ADD: только добавляем SID (клиенты не трогаем) ===
     log "[➕ ADD] Используем существующий UUID. Добавляем SID: ${NEW_SID}"
     NEW_UUID="$EXISTING_UUID"
     
-    # 🔑 Читаем PUBLIC_KEY из файла, если он есть
     PUBLIC_KEY=""
     if [ -f "$PUBKEY_FILE" ] && [ -s "$PUBKEY_FILE" ]; then
         PUBLIC_KEY=$(cat "$PUBKEY_FILE")
     fi
     
-    # Собираем текущие SID + новый, убираем пустые и дубликаты
     CURRENT=$(jq -r '.inbounds[] | select(.protocol=="vless" and .port==443) | .streamSettings.realitySettings.shortIds[]? // empty' "$CONF" 2>/dev/null | grep -v '^$' || true)
     NEW_LIST=$(printf '%s\n%s' "$CURRENT" "$NEW_SID" | grep -v '^$' | sort -u | jq -R . | jq -s .)
     
-    # Обновляем ТОЛЬКО shortIds
     jq --argjson sids "$NEW_LIST" '
       (.inbounds[] | select(.protocol=="vless" and .port==443) | .streamSettings.realitySettings.shortIds) = $sids
     ' "$CONF" > "${CONF}.tmp" && mv "${CONF}.tmp" "$CONF"
 fi
 
-# ── [6] ВАЛИДАЦИЯ (с корректной обработкой ошибок) ──
+# ── ВАЛИДАЦИЯ ──
 log "[INFO] Проверяем конфиг..."
 set +e
 VALIDATION_OUTPUT=$(/usr/local/bin/xray -test -config "$CONF" 2>&1)
@@ -106,7 +137,7 @@ if ! systemctl is-active --quiet xray; then
     exit 1
 fi
 
-# ── [7-8] СБОРКА И ВЫВОД ССЫЛКИ ──
+# ── СБОРКА И ВЫВОД ──
 SERVER_IP=$(curl -s --max-time 3 https://api.ipify.org || echo "ВАШ_IP")
 SNI=$(jq -r '.inbounds[] | select(.protocol=="vless" and .port==443) | .streamSettings.realitySettings.serverNames[0]' "$CONF")
 
