@@ -1,5 +1,5 @@
 #!/bin/bash
-set -euo pipefail
+set -uo pipefail  # Убрали -e, чтобы контролировать ошибки вручную
 # setup-xray-reality.sh — настройка Xray Reality (1 UUID + много SID)
 
 CONF="/usr/local/etc/xray/config.json"
@@ -59,38 +59,40 @@ if [ -z "$EXISTING_UUID" ] || [ "$EXISTING_UUID" = "null" ]; then
       ]
     ' "$CONF" > "${CONF}.tmp" && mv "${CONF}.tmp" "$CONF"
 else
-    # === ADD: добавляем SID и клиента (надёжный способ) ===
+    # === ADD: надёжное добавление SID и клиента ===
     log "[➕ ADD] Используем существующий UUID. Добавляем SID: ${NEW_SID}"
     NEW_UUID="$EXISTING_UUID"
     
-    # 1. Читаем текущие shortIds, фильтруем пустые, добавляем новый, убираем дубликаты
-    CURRENT_SIDS=$(jq -r '.inbounds[] | select(.protocol=="vless" and .port==443) | .streamSettings.realitySettings.shortIds[]? // empty' "$CONF" 2>/dev/null | grep -v '^$' || true)
-    NEW_SIDS_JSON=$(printf '%s\n%s' "$CURRENT_SIDS" "$NEW_SID" | grep -v '^$' | sort -u | jq -R . | jq -s .)
+    # 1. Собираем текущие SID + новый, убираем пустые и дубликаты
+    CURRENT=$(jq -r '.inbounds[] | select(.protocol=="vless" and .port==443) | .streamSettings.realitySettings.shortIds[]? // empty' "$CONF" 2>/dev/null | grep -v '^$' || true)
+    NEW_LIST=$(printf '%s\n%s' "$CURRENT" "$NEW_SID" | grep -v '^$' | sort -u | jq -R . | jq -s .)
     
-    # 2. Обновляем shortIds простым присваиванием
-    jq --argjson sids "$NEW_SIDS_JSON" '
+    # 2. Обновляем shortIds
+    jq --argjson sids "$NEW_LIST" '
       (.inbounds[] | select(.protocol=="vless" and .port==443) | .streamSettings.realitySettings.shortIds) = $sids
     ' "$CONF" > "${CONF}.tmp" && mv "${CONF}.tmp" "$CONF"
     
-    # 3. Добавляем нового клиента
+    # 3. Добавляем клиента
     jq --arg uuid "$NEW_UUID" '
       (.inbounds[] | select(.protocol=="vless" and .port==443) | .settings.clients) += 
         [{"id": $uuid, "flow": "xtls-rprx-vision", "email": "shared"}]
     ' "$CONF" > "${CONF}.tmp" && mv "${CONF}.tmp" "$CONF"
 fi
 
-# ── [6] ВАЛИДАЦИЯ И ПЕРЕЗАПУСК (с дебаг-выводом) ──
+# ── [6] ВАЛИДАЦИЯ (с корректной обработкой ошибок) ──
 log "[INFO] Проверяем конфиг..."
+# Временно отключаем exit-on-error для этой команды
+set +e
 VALIDATION_OUTPUT=$(/usr/local/bin/xray -test -config "$CONF" 2>&1)
-if [ $? -ne 0 ]; then
+VALIDATION_CODE=$?
+set -e  # Включаем обратно
+
+if [ "$VALIDATION_CODE" -ne 0 ]; then
     log "[ERROR] Конфиг невалиден!"
     log "[DEBUG] Ошибка от Xray:"
     echo "$VALIDATION_OUTPUT" | tee -a "$LOG"
-    
-    # Показываем проблемную секцию конфига
-    log "[DEBUG] В inbound (port 443) сейчас:"
-    jq '.inbounds[] | select(.protocol=="vless" and .port==443)' "$CONF" 2>/dev/null | tee -a "$LOG" || cat "$CONF" | tee -a "$LOG"
-    
+    log "[DEBUG] Текущий inbound:"
+    jq '.inbounds[] | select(.protocol=="vless" and .port==443)' "$CONF" 2>/dev/null | tee -a "$LOG" || true
     log "[ERROR] Откат..."
     cp "$BACKUP" "$CONF"
     exit 1
