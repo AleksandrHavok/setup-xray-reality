@@ -26,6 +26,11 @@ sudo bash <(curl -fsSL https://raw.githubusercontent.com/AleksandrHavok/setup-xr
 - Сохранит старые ключи и подключения
 - Выдаст новую ссылку для импорта в клиент на устройстве
 
+Чтобы проверить, что новое устройство появилось в списке можно выполнить:
+```bash
+sudo jq '.inbounds[] | select(.protocol=="vless" and .port==443) | .streamSettings.realitySettings.shortIds' /usr/local/etc/xray/config.json
+```
+
 ### Автообновление
 При первом запуске скрипт сам предложит настроить еженедельное обновление Xray (каждый понедельник в 04:00)
 
