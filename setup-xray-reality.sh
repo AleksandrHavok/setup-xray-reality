@@ -55,6 +55,9 @@ NEW_UUID=$(/usr/local/bin/xray uuid)
 CLIENT_COUNT=$(jq '[.inbounds[] | select(.protocol=="vless" and .port==443) | .settings.clients | length] | add // 0' "$CONF")
 DEVICE_NAME="device_$(printf '%02d' $((CLIENT_COUNT + 1)))"
 
+# Генерируем уникальный shortId (8 hex символов)
+NEW_SID=$(openssl rand -hex 4)
+
 # ── 5. First run или добавление устройства ──
 CURRENT_PKEY=$(jq -r '.inbounds[] | select(.protocol=="vless" and .port==443) | .streamSettings.realitySettings.privateKey // empty' "$CONF" 2>/dev/null || echo "")
 
@@ -62,14 +65,28 @@ if [ -z "$CURRENT_PKEY" ] || [ "$CURRENT_PKEY" = "null" ]; then
     log "[🔑 FIRST RUN] Генерируем пару Reality-ключей..."
     read -r PRIVATE_KEY PUBLIC_KEY < <(/usr/local/bin/xray x25519 | awk '/Private:|Public:/ {print $2}' | xargs)
     echo "$PUBLIC_KEY" > "$PUBKEY_FILE" && chmod 600 "$PUBKEY_FILE"
-    jq --arg pkey "$PRIVATE_KEY" --arg uuid "$NEW_UUID" --arg email "$DEVICE_NAME" '(.inbounds[] | select(.protocol=="vless" and .port==443)) |= (.streamSettings.realitySettings.privateKey = $pkey | .settings.clients += [{"id": $uuid, "flow": "xtls-rprx-vision", "email": $email}])' "$CONF" > "${CONF}.tmp" && mv "${CONF}.tmp" "$CONF"
+    
+    # Первый запуск: подставляем ключи + первого клиента + первый shortId
+    jq --arg pkey "$PRIVATE_KEY" --arg uuid "$NEW_UUID" --arg email "$DEVICE_NAME" --arg sid "$NEW_SID" \
+       '(.inbounds[] | select(.protocol=="vless" and .port==443)) |= 
+          (.streamSettings.realitySettings.privateKey = $pkey |
+           .streamSettings.realitySettings.shortIds = [$sid] |
+           .settings.clients += [{"id": $uuid, "flow": "xtls-rprx-vision", "email": $email}])' \
+       "$CONF" > "${CONF}.tmp" && mv "${CONF}.tmp" "$CONF"
 else
     log "[➕ ADD] Добавляем устройство: $DEVICE_NAME (ключи не меняются)"
-    PUBLIC_KEY=""
-    if [ -f "$PUBKEY_FILE" ] && [ -s "$PUBKEY_FILE" ]; then
-        PUBLIC_KEY=$(cat "$PUBKEY_FILE")
-    fi
-    jq --arg uuid "$NEW_UUID" --arg email "$DEVICE_NAME" '(.inbounds[] | select(.protocol=="vless" and .port==443)).settings.clients += [{"id": $uuid, "flow": "xtls-rprx-vision", "email": $email}]' "$CONF" > "${CONF}.tmp" && mv "${CONF}.tmp" "$CONF"
+    
+    # Добавляем новый shortId в массив (если его ещё нет)
+    jq --arg sid "$NEW_SID" \
+       '(.inbounds[] | select(.protocol=="vless" and .port==443)).streamSettings.realitySettings.shortIds |= 
+          (if index($sid) then . else . + [$sid] end)' \
+       "$CONF" > "${CONF}.tmp" && mv "${CONF}.tmp" "$CONF"
+    
+    # Добавляем нового клиента
+    jq --arg uuid "$NEW_UUID" --arg email "$DEVICE_NAME" \
+       '(.inbounds[] | select(.protocol=="vless" and .port==443)).settings.clients += 
+          [{"id": $uuid, "flow": "xtls-rprx-vision", "email": $email}]' \
+       "$CONF" > "${CONF}.tmp" && mv "${CONF}.tmp" "$CONF"
 fi
 
 # ── 6. Валидация и перезапуск ──
@@ -91,28 +108,37 @@ fi
 # ── 7. Подготовка данных для ссылки ──
 SERVER_IP=$(curl -s --max-time 3 https://api.ipify.org || echo "ВАШ_IP")
 SNI=$(jq -r '.inbounds[] | select(.protocol=="vless" and .port==443) | .streamSettings.realitySettings.serverNames[0]' "$CONF")
-SID=$(jq -r '.inbounds[] | select(.protocol=="vless" and .port==443) | .streamSettings.realitySettings.shortIds[0]' "$CONF")
 
-# ── 8. Вывод результата ──
+# Пробуем взять PublicKey из файла
+PUBLIC_KEY=""
+[ -f "$PUBKEY_FILE" ] && [ -s "$PUBKEY_FILE" ] && PUBLIC_KEY=$(cat "$PUBKEY_FILE")
+
+# ── 8. Генерация ссылки (ВСЕГДА, даже если нет PublicKey) ──
+PBK_VALUE="${PUBLIC_KEY:-__ВСТАВЬТЕ_ВАШ_PUBLIC_KEY_СЮДА__}"
+VLESS_LINK="vless://${NEW_UUID}@${SERVER_IP}:443?encryption=none&security=reality&sni=${SNI}&fp=chrome&pbk=${PBK_VALUE}&sid=${NEW_SID}&type=tcp&flow=xtls-rprx-vision#${DEVICE_NAME}"
+
+# ── 9. Вывод результата ──
 echo ""
 echo "╔════════════════════════════════════════════════════════════╗"
 echo "║  ✅  Готово! Устройство: ${DEVICE_NAME}"
-if [ -n "$PUBLIC_KEY" ]; then
-    VLESS_LINK="vless://${NEW_UUID}@${SERVER_IP}:443?encryption=none&security=reality&sni=${SNI}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SID}&type=tcp&flow=xtls-rprx-vision#${DEVICE_NAME}"
-    echo "║  🔗  Готовая ссылка для импорта:                         ║"
-    echo "║  ${VLESS_LINK}"
-else
-    echo "║  ⚠️  PublicKey не найден на сервере (он не хранится    ║"
-    echo "║      в конфиге). Возьмите его из своих записей и        ║"
-    echo "║      добавьте в клиент вручную как параметр pbk=...     ║"
-    echo "║  📋  Остальные данные:                                  ║"
-    echo "║     UUID: ${NEW_UUID} | IP: ${SERVER_IP}"
-    echo "║     SNI: ${SNI} | SID: ${SID} | Flow: xtls-rprx-vision  ║"
+echo "║  🔗  Ссылка для импорта:                                    ║"
+echo "║                                                              ║"
+echo "║  ${VLESS_LINK}"
+echo "║                                                              ║"
+if [ -z "$PUBLIC_KEY" ]; then
+    echo "║  ⚠️  В ссылке параметр pbk= содержит плейсхолдер.       ║"
+    echo "║     Замените __ВСТАВЬТЕ_ВАШ_PUBLIC_KEY_СЮДА__          ║"
+    echo "║     на ваш реальный PublicKey из записей.              ║"
+    echo "║     (Ctrl+F по строке → заменить один раз)             ║"
 fi
+echo "║  📋  Или по отдельности:                                   ║"
+echo "║     UUID: ${NEW_UUID} | IP: ${SERVER_IP}                   ║"
+echo "║     SNI: ${SNI} | SID: ${NEW_SID} | Flow: xtls-rprx-vision ║"
+[ -z "$PUBLIC_KEY" ] && echo "║     PublicKey: возьмите из своих записей      ║"
 echo "╚════════════════════════════════════════════════════════════╝"
 echo "💡 Чтобы добавить ещё одно устройство — запустите скрипт снова."
 
-# ── 9. Опционально: установка автообновления ──
+# ── 10. Опционально: установка автообновления ──
 echo -n "[?] Настроить автообновление Xray? (y/n): "
 read -n 1 -r REPLY
 echo
