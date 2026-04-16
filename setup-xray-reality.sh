@@ -31,25 +31,25 @@ cp "$CONF" "$BACKUP"
 NEW_SID=$(openssl rand -hex 4 2>/dev/null || head -c 4 /dev/urandom | xxd -p)
 EXISTING_UUID=$(jq -r '.inbounds[] | select(.protocol=="vless" and .port==443) | .settings.clients[0].id // empty' "$CONF" 2>/dev/null || echo "")
 
-# ── [5] ОСНОВНАЯ ЛОГИКА (с защитой от exit code grep) ──
+# ── [5] ОСНОВНАЯ ЛОГИКА ──
 if [ -z "$EXISTING_UUID" ] || [ "$EXISTING_UUID" = "null" ]; then
+    # === FIRST RUN: генерируем всё с нуля ===
     log "[🔑 FIRST RUN] Генерируем ключи и базовый UUID..."
     NEW_UUID=$(/usr/local/bin/xray uuid)
     
-    # ✅ Надёжный парсинг: || true предотвращает выход скрипта при отсутствии совпадения
     OUTPUT=$(/usr/local/bin/xray x25519 2>&1)
     PRIVATE_KEY=$(echo "$OUTPUT" | grep "PrivateKey:" | awk '{print $2}' || true)
     PUBLIC_KEY=$(echo "$OUTPUT" | grep -E "PublicKey:|Password \(PublicKey\):" | awk '{print $NF}' || true)
     
-    # Финальная валидация
     if [ -z "$PRIVATE_KEY" ] || [ -z "$PUBLIC_KEY" ]; then
-        log "[ERROR] Не удалось получить ключи. Вывод xray: $OUTPUT"
+        log "[ERROR] Не удалось получить ключи!"
         cp "$BACKUP" "$CONF"
         exit 1
     fi
     
     echo "$PUBLIC_KEY" > "$PUBKEY_FILE" && chmod 600 "$PUBKEY_FILE"
     
+    # Обновляем конфиг: ключи + первый клиент + первый SID
     jq --arg pkey "$PRIVATE_KEY" --arg uuid "$NEW_UUID" --arg sid "$NEW_SID" '
       .inbounds = [.inbounds[] | 
         if .protocol=="vless" and .port==443 then 
@@ -60,13 +60,29 @@ if [ -z "$EXISTING_UUID" ] || [ "$EXISTING_UUID" = "null" ]; then
       ]
     ' "$CONF" > "${CONF}.tmp" && mv "${CONF}.tmp" "$CONF"
 else
+    # === ADD: только добавляем SID и клиента (раздельные операции) ===
     log "[➕ ADD] Используем существующий UUID. Добавляем SID: ${NEW_SID}"
     NEW_UUID="$EXISTING_UUID"
     
-    jq --arg sid "$NEW_SID" --arg uuid "$NEW_UUID" '
+    # 1. Добавляем SID в массив (если ещё нет)
+    jq --arg sid "$NEW_SID" '
       .inbounds = [.inbounds[] |
         if .protocol=="vless" and .port==443 then
-          .streamSettings.realitySettings.shortIds |= (if index($sid) then . else . + [$sid] end) |
+          if .streamSettings.realitySettings.shortIds == null then
+            .streamSettings.realitySettings.shortIds = [$sid]
+          elif (.streamSettings.realitySettings.shortIds | index($sid)) then
+            .
+          else
+            .streamSettings.realitySettings.shortIds += [$sid]
+          end
+        else . end
+      ]
+    ' "$CONF" > "${CONF}.tmp" && mv "${CONF}.tmp" "$CONF"
+    
+    # 2. Добавляем нового клиента (с тем же UUID)
+    jq --arg uuid "$NEW_UUID" '
+      .inbounds = [.inbounds[] |
+        if .protocol=="vless" and .port==443 then
           .settings.clients += [{"id": $uuid, "flow": "xtls-rprx-vision", "email": "shared"}]
         else . end
       ]
