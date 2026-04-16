@@ -31,18 +31,19 @@ cp "$CONF" "$BACKUP"
 NEW_SID=$(openssl rand -hex 4 2>/dev/null || head -c 4 /dev/urandom | xxd -p)
 EXISTING_UUID=$(jq -r '.inbounds[] | select(.protocol=="vless" and .port==443) | .settings.clients[0].id // empty' "$CONF" 2>/dev/null || echo "")
 
-# ── [5] ОСНОВНАЯ ЛОГИКА ──
+# ── [5] ОСНОВНАЯ ЛОГИКА (с защитой от exit code grep) ──
 if [ -z "$EXISTING_UUID" ] || [ "$EXISTING_UUID" = "null" ]; then
     log "[🔑 FIRST RUN] Генерируем ключи и базовый UUID..."
     NEW_UUID=$(/usr/local/bin/xray uuid)
     
-    # ✅ Исправленный парсинг: поддерживаем оба формата вывода
+    # ✅ Надёжный парсинг: || true предотвращает выход скрипта при отсутствии совпадения
     OUTPUT=$(/usr/local/bin/xray x25519 2>&1)
-    PRIVATE_KEY=$(echo "$OUTPUT" | grep "PrivateKey:" | awk '{print $2}')
-    PUBLIC_KEY=$(echo "$OUTPUT" | grep -E "PublicKey:|Password \(PublicKey\):" | awk '{print $NF}')
+    PRIVATE_KEY=$(echo "$OUTPUT" | grep "PrivateKey:" | awk '{print $2}' || true)
+    PUBLIC_KEY=$(echo "$OUTPUT" | grep -E "PublicKey:|Password \(PublicKey\):" | awk '{print $NF}' || true)
     
+    # Финальная валидация
     if [ -z "$PRIVATE_KEY" ] || [ -z "$PUBLIC_KEY" ]; then
-        log "[ERROR] Не удалось распарсить ключи!"
+        log "[ERROR] Не удалось получить ключи. Вывод xray: $OUTPUT"
         cp "$BACKUP" "$CONF"
         exit 1
     fi
