@@ -60,32 +60,20 @@ if [ -z "$EXISTING_UUID" ] || [ "$EXISTING_UUID" = "null" ]; then
       ]
     ' "$CONF" > "${CONF}.tmp" && mv "${CONF}.tmp" "$CONF"
 else
-    # === ADD: только добавляем SID и клиента (раздельные операции) ===
+    # === ADD: последовательно добавляем SID и клиента ===
     log "[➕ ADD] Используем существующий UUID. Добавляем SID: ${NEW_SID}"
     NEW_UUID="$EXISTING_UUID"
     
-    # 1. Добавляем SID в массив (если ещё нет)
+    # 1. Добавляем SID в массив shortIds (если ещё нет)
     jq --arg sid "$NEW_SID" '
-      .inbounds = [.inbounds[] |
-        if .protocol=="vless" and .port==443 then
-          if .streamSettings.realitySettings.shortIds == null then
-            .streamSettings.realitySettings.shortIds = [$sid]
-          elif (.streamSettings.realitySettings.shortIds | index($sid)) then
-            .
-          else
-            .streamSettings.realitySettings.shortIds += [$sid]
-          end
-        else . end
-      ]
+      (.inbounds[] | select(.protocol=="vless" and .port==443) | .streamSettings.realitySettings.shortIds) |= 
+        ((. // []) | if index($sid) then . else . + [$sid] end)
     ' "$CONF" > "${CONF}.tmp" && mv "${CONF}.tmp" "$CONF"
     
-    # 2. Добавляем нового клиента (с тем же UUID)
+    # 2. Добавляем нового клиента в массив clients
     jq --arg uuid "$NEW_UUID" '
-      .inbounds = [.inbounds[] |
-        if .protocol=="vless" and .port==443 then
-          .settings.clients += [{"id": $uuid, "flow": "xtls-rprx-vision", "email": "shared"}]
-        else . end
-      ]
+      (.inbounds[] | select(.protocol=="vless" and .port==443) | .settings.clients) += 
+        [{"id": $uuid, "flow": "xtls-rprx-vision", "email": "shared"}]
     ' "$CONF" > "${CONF}.tmp" && mv "${CONF}.tmp" "$CONF"
 fi
 
