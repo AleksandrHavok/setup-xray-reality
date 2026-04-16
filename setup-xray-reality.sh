@@ -59,22 +59,23 @@ if [ -z "$EXISTING_UUID" ] || [ "$EXISTING_UUID" = "null" ]; then
       ]
     ' "$CONF" > "${CONF}.tmp" && mv "${CONF}.tmp" "$CONF"
 else
-    # === ADD: последовательно добавляем SID и клиента через пайп ===
+    # === ADD: добавляем SID и клиента (надёжный способ) ===
     log "[➕ ADD] Используем существующий UUID. Добавляем SID: ${NEW_SID}"
     NEW_UUID="$EXISTING_UUID"
     
-    # Один jq-запрос: сначала добавляем SID, потом клиента (через |)
-    jq --arg sid "$NEW_SID" --arg uuid "$NEW_UUID" '
-      .inbounds = [.inbounds[] |
-        if .protocol=="vless" and .port==443 then
-          # 1. Добавляем SID (если нет)
-          (.streamSettings.realitySettings.shortIds // []) as $sids |
-          (if ($sids | index($sid)) then $sids else $sids + [$sid] end) as $new_sids |
-          .streamSettings.realitySettings.shortIds = $new_sids |
-          # 2. Добавляем клиента
-          .settings.clients += [{"id": $uuid, "flow": "xtls-rprx-vision", "email": "shared"}]
-        else . end
-      ]
+    # 1. Читаем текущие shortIds, фильтруем пустые, добавляем новый, убираем дубликаты
+    CURRENT_SIDS=$(jq -r '.inbounds[] | select(.protocol=="vless" and .port==443) | .streamSettings.realitySettings.shortIds[]? // empty' "$CONF" 2>/dev/null | grep -v '^$' || true)
+    NEW_SIDS_JSON=$(printf '%s\n%s' "$CURRENT_SIDS" "$NEW_SID" | grep -v '^$' | sort -u | jq -R . | jq -s .)
+    
+    # 2. Обновляем shortIds простым присваиванием
+    jq --argjson sids "$NEW_SIDS_JSON" '
+      (.inbounds[] | select(.protocol=="vless" and .port==443) | .streamSettings.realitySettings.shortIds) = $sids
+    ' "$CONF" > "${CONF}.tmp" && mv "${CONF}.tmp" "$CONF"
+    
+    # 3. Добавляем нового клиента
+    jq --arg uuid "$NEW_UUID" '
+      (.inbounds[] | select(.protocol=="vless" and .port==443) | .settings.clients) += 
+        [{"id": $uuid, "flow": "xtls-rprx-vision", "email": "shared"}]
     ' "$CONF" > "${CONF}.tmp" && mv "${CONF}.tmp" "$CONF"
 fi
 
