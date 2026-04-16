@@ -82,23 +82,10 @@ PBK_VALUE="${PUBLIC_KEY:-__ВАШ_PUBLIC_KEY__}"
 VLESS_LINK="vless://${NEW_UUID}@${SERVER_IP}:443?encryption=none&security=reality&sni=${SNI}&fp=chrome&pbk=${PBK_VALUE}&sid=${NEW_SID}&type=tcp&flow=xtls-rprx-vision#shared-device"
 
 echo ""
-echo "╔════════════════════════════════════════════════════════════╗"
-echo "║  ✅  Готово! Новый SID: ${NEW_SID}"
-echo "║  🔗  Ссылка для импорта:                                    ║"
-echo "║  ${VLESS_LINK}"
-[ -z "$PUBLIC_KEY" ] && echo "║  ⚠️  Замените __ВАШ_PUBLIC_KEY__ в pbk= на ваш PublicKey"
-echo "╚════════════════════════════════════════════════════════════╝"
-echo "💡 UUID общий. Разделение устройств идёт по уникальному SID."
-
-echo -n "[?] Настроить автообновление Xray? (y/n): "
-read -n 1 -r REPLY; echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    log "[INFO] Скачиваем скрипт автообновления..."
-    curl -fsSL "${REPO_RAW}/xray-auto-update.sh" -o /usr/local/bin/xray-auto-update.sh 2>/dev/null && {
-        chmod +x /usr/local/bin/xray-auto-update.sh
-        if ! sudo crontab -l 2>/dev/null | grep -q "xray-auto-update.sh"; then
-            (sudo crontab -l 2>/dev/null || echo ""; echo "0 4 * * 1 /usr/local/bin/xray-auto-update.sh") | sudo crontab -
-            log "[OK] Автообновление добавлено в cron."
-        else log "[OK] Автообновление уже настроено."; fi
-    } || log "[WARN] Не удалось скачать скрипт автообновления."
-else log "[INFO] Автообновление пропущено."; fi
+echo "════════════════════════════════════════════"
+echo "Ссылка для импорта в клиент готова! Новый SID: ${NEW_SID}"
+[ -z "$PUBLIC_KEY" ] && echo "⚠️  Не забудьте заменить pbk=__ВАШ_PUBLIC_KEY__ на ваш публичный ключ"
+echo "Ссылка:"
+echo "${VLESS_LINK}"
+echo "════════════════════════════════════════════"
+echo ""
