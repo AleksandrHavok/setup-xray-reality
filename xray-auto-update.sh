@@ -31,8 +31,12 @@ if ! bash -c "$(curl -L --max-time 60 https://github.com/XTLS/Xray-install/raw/m
 fi
 
 # Проверка и рестарт
-if [ -f "$CONF" ] && ! xray test -config "$CONF" > /dev/null 2>&1; then
-    echo "[ERROR] Конфиг невалиден! Откат..."; exit 1
+if [ -f "$CONF" ] && ! /usr/local/bin/xray -test -config "$CONF" > /dev/null 2>&1; then
+    echo "[ERROR] Конфиг невалиден после обновления! Откат..."
+    LATEST_BKP=$(ls -t "${BACKUP_DIR}/config.json."* 2>/dev/null | head -n1)
+    [ -n "$LATEST_BKP" ] && cp "$LATEST_BKP" "$CONF"
+    systemctl restart xray
+    exit 1
 fi
 
 systemctl restart xray && sleep 3
