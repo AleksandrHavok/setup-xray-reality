@@ -31,14 +31,27 @@ cp "$CONF" "$BACKUP"
 NEW_SID=$(openssl rand -hex 4 2>/dev/null || head -c 4 /dev/urandom | xxd -p)
 EXISTING_UUID=$(jq -r '.inbounds[] | select(.protocol=="vless" and .port==443) | .settings.clients[0].id // empty' "$CONF" 2>/dev/null || echo "")
 
-# ── [5] ОСНОВНАЯ ЛОГИКА (ИСПРАВЛЕННЫЙ JQ) ──
+# ── [5] ОСНОВНАЯ ЛОГИКА (ИСПРАВЛЕННЫЙ ПАРСИНГ КЛЮЧЕЙ) ──
 if [ -z "$EXISTING_UUID" ] || [ "$EXISTING_UUID" = "null" ]; then
     log "[🔑 FIRST RUN] Генерируем ключи и базовый UUID..."
     NEW_UUID=$(/usr/local/bin/xray uuid)
-    read -r PRIVATE_KEY PUBLIC_KEY < <(/usr/local/bin/xray x25519 | awk '/PrivateKey:/ {print $2}' | xargs)
+    
+    # ✅ Исправлено: парсим ОБА ключа из вывода xray x25519
+    OUTPUT=$(/usr/local/bin/xray x25519)
+    PRIVATE_KEY=$(echo "$OUTPUT" | grep "PrivateKey:" | awk '{print $2}')
+    PUBLIC_KEY=$(echo "$OUTPUT" | grep "PublicKey:" | awk '{print $2}')
+    
+    # Проверяем, что оба ключа получены
+    if [ -z "$PRIVATE_KEY" ] || [ -z "$PUBLIC_KEY" ]; then
+        log "[ERROR] Не удалось сгенерировать ключи!"
+        cp "$BACKUP" "$CONF"
+        exit 1
+    fi
+    
+    # Сохраняем publicKey в файл И используем ту же переменную для ссылки
     echo "$PUBLIC_KEY" > "$PUBKEY_FILE" && chmod 600 "$PUBKEY_FILE"
     
-    # Обновляем конфиг: перезаписываем realitySettings и добавляем клиента
+    # Обновляем конфиг
     jq --arg pkey "$PRIVATE_KEY" --arg uuid "$NEW_UUID" --arg sid "$NEW_SID" '
       .inbounds = [.inbounds[] | 
         if .protocol=="vless" and .port==443 then 
@@ -52,7 +65,7 @@ else
     log "[➕ ADD] Используем существующий UUID. Добавляем SID: ${NEW_SID}"
     NEW_UUID="$EXISTING_UUID"
     
-    # Добавляем SID в массив (без дубликатов) и нового клиента
+    # Добавляем SID и клиента
     jq --arg sid "$NEW_SID" --arg uuid "$NEW_UUID" '
       .inbounds = [.inbounds[] |
         if .protocol=="vless" and .port==443 then
