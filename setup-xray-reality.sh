@@ -78,10 +78,19 @@ else
     ' "$CONF" > "${CONF}.tmp" && mv "${CONF}.tmp" "$CONF"
 fi
 
-# ── [6] ВАЛИДАЦИЯ И ПЕРЕЗАПУСК ──
+# ── [6] ВАЛИДАЦИЯ И ПЕРЕЗАПУСК (с дебаг-выводом) ──
 log "[INFO] Проверяем конфиг..."
-if ! /usr/local/bin/xray -test -config "$CONF" > /dev/null 2>&1; then
-    log "[ERROR] Конфиг невалиден! Откат..."
+VALIDATION_OUTPUT=$(/usr/local/bin/xray -test -config "$CONF" 2>&1)
+if [ $? -ne 0 ]; then
+    log "[ERROR] Конфиг невалиден!"
+    log "[DEBUG] Ошибка от Xray:"
+    echo "$VALIDATION_OUTPUT" | tee -a "$LOG"
+    
+    # Показываем проблемную секцию конфига
+    log "[DEBUG] В inbound (port 443) сейчас:"
+    jq '.inbounds[] | select(.protocol=="vless" and .port==443)' "$CONF" 2>/dev/null | tee -a "$LOG" || cat "$CONF" | tee -a "$LOG"
+    
+    log "[ERROR] Откат..."
     cp "$BACKUP" "$CONF"
     exit 1
 fi
@@ -90,6 +99,7 @@ log "[INFO] Перезапускаем Xray..."
 sudo systemctl restart xray && sleep 3
 if ! systemctl is-active --quiet xray; then
     log "[ERROR] Xray не запустился!"
+    journalctl -u xray -n 20 --no-pager | tee -a "$LOG"
     cp "$BACKUP" "$CONF"
     exit 1
 fi
